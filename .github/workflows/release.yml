@@ -21,19 +21,19 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin_name: ket
-            asset_name: ket-linux-amd64
+            asset_name: ket-linux
           - os: macos-latest
             target: x86_64-apple-darwin
             bin_name: ket
-            asset_name: ket-macos-amd64
+            asset_name: ket-macos-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
             bin_name: ket
-            asset_name: ket-macos-arm64
+            asset_name: ket-macos-aarch64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin_name: ket.exe
-            asset_name: ket-windows.exe
+            asset_name: ket-windows-x86_64.exe
 
     steps:
       # 1. Grab your source code
