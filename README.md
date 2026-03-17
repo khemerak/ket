@@ -20,6 +20,7 @@ The project was built as a **learning exercise** to explore the following Rust c
 | Colorized output | How to style terminal text with `console` |
 | Error handling | How to propagate and enrich errors using `anyhow` |
 | File I/O | How to create and write binary data to a file |
+| Interactive TUI | How to build an interactive terminal UI with `dialoguer` |
 
 ---
 
@@ -27,6 +28,8 @@ The project was built as a **learning exercise** to explore the following Rust c
 
 - 📥 Download any file from a given HTTP/HTTPS URL
 - 🎬 Download videos (`.mp4`) and audio (`.mp3`) from media sites (YouTube, Vimeo, etc.) using `yt-dlp` integration (`-m` / `-a` flags)
+- 🔧 **Auto-install yt-dlp** — if `yt-dlp` is not found, `ket` offers to install it automatically (via `pip` or standalone binary download)
+- 🖥️ **Interactive Mode** — double-click `ket.exe` (or run without arguments) to launch a beautiful terminal UI for pasting URLs, choosing download type, and more
 - 📊 Real-time progress bar with elapsed time, speed, and ETA (when `Content-Length` is available)
 - 🌀 Spinner fallback for responses with unknown content length
 - 🎨 Colorized terminal output (green for OK, red for sizes/warnings)
@@ -63,6 +66,8 @@ The compiled binary will be located at `target/release/ket.exe` (Windows) or `ta
 
 ## 🚀 Usage
 
+### CLI Mode (traditional)
+
 ```bash
 # Basic download — saves file using the name from the URL
 ket https://example.com/file.zip
@@ -81,6 +86,50 @@ ket https://www.youtube.com/watch?v=... -a
 ket https://example.com/video.mp4 -m
 ```
 
+### 🖥️ Interactive Mode (new!)
+
+Simply run `ket` with **no arguments** — or double-click `ket.exe` on Windows — to launch the interactive terminal UI:
+
+```
+  ┌─────────────────────────────────────────┐
+  │                                         │
+  │    ket 🦀  — Download Anything Fast     │
+  │          v0.1.0 • Interactive Mode      │
+  │                                         │
+  └─────────────────────────────────────────┘
+
+  Type a URL to start downloading. Type 'q' to quit.
+
+  📎 Paste URL: https://www.youtube.com/watch?v=...
+  Download type: 🎬 Video (MP4) / 🎵 Audio only (MP3)
+  📁 Output filename (Enter to auto-detect):
+
+  ✔ Download complete!
+
+  Download another? (y/n)
+```
+
+**Interactive mode features:**
+- Paste any URL directly
+- Auto-detects media sites (YouTube, TikTok, Twitter, etc.)
+- Choose between video or audio-only for media downloads
+- Optional custom filename
+- Loop to download multiple files in one session
+- Type `q`, `quit`, or `exit` to close
+
+### 🔧 Automatic yt-dlp Installation
+
+When you try to download from a media site and `yt-dlp` is not installed, `ket` will:
+
+1. **Detect** that `yt-dlp` is missing
+2. **Ask** if you'd like to install it automatically
+3. **Install** via one of these methods:
+   - `pip install yt-dlp` (if Python/pip is available)
+   - Direct download of the standalone `yt-dlp.exe` binary (Windows)
+   - `curl` download to `/usr/local/bin` or `~/.local/bin` (Linux/macOS)
+
+> **Note:** For regular HTTP/HTTPS file downloads, `yt-dlp` is **not required**. The auto-install prompt only appears when downloading from media sites like YouTube, TikTok, etc.
+
 ### Help
 
 ```bash
@@ -89,10 +138,10 @@ ket --help
 
 ```
 USAGE:
-    ket [OPTIONS] <URL>
+    ket [OPTIONS] [URL]
 
 ARGS:
-    <URL>    url to download
+    <URL>    url to download (omit to launch interactive mode)
 
 OPTIONS:
     -O, --output <FILE>    write documents to FILE
@@ -109,8 +158,7 @@ OPTIONS:
 ```
 ket/
 ├── src/
-│   ├── main.rs         # All application logic (single-file project)
-│   └── main.rs.bak     # Earlier version of main.rs (before refactoring)
+│   └── main.rs         # All application logic (single-file project)
 ├── Cargo.toml          # Project metadata and dependencies
 ├── Cargo.lock          # Exact locked dependency versions
 └── .gitignore          # Excludes /target from version control
@@ -130,6 +178,7 @@ Defined in [`Cargo.toml`](./Cargo.toml):
 | [`console`](https://crates.io/crates/console) | `0.15` | Colorized and styled terminal text output |
 | [`anyhow`](https://crates.io/crates/anyhow) | `1.0` | Flexible, ergonomic error handling |
 | [`dirs`](https://crates.io/crates/dirs) | `6.0` | Cross-platform identification of system folders like `Downloads` |
+| [`dialoguer`](https://crates.io/crates/dialoguer) | `0.11` | Interactive terminal prompts (input, confirm, select) |
 
 ---
 
@@ -138,17 +187,48 @@ Defined in [`Cargo.toml`](./Cargo.toml):
 ### 1. CLI Parsing (`clap`)
 
 `main()` uses `clap`'s builder API to define the app's interface:
-- A required positional argument `URL`
+- An **optional** positional argument `URL` (omit to launch interactive mode)
 - An optional `-O` / `--output` flag for the destination filename
+- `-m` / `--media` to force yt-dlp usage
+- `-a` / `--audio` for audio-only downloads
 
 ```rust
 let matches = App::new("Ket")
-    .arg(Arg::with_name("URL").required(true).index(1))
+    .arg(Arg::with_name("URL").required(false).index(1))
     .arg(Arg::with_name("OUTPUT").short("O").long("output").takes_value(true))
     .get_matches();
 ```
 
-### 2. HTTP Request (`reqwest`)
+### 2. Interactive Mode (`dialoguer`)
+
+When no URL is provided, `ket` launches an interactive terminal UI using `dialoguer`:
+
+```rust
+let url: String = Input::new()
+    .with_prompt("📎 Paste URL")
+    .interact_text()?;
+```
+
+This uses `dialoguer::Input` for text entry, `dialoguer::Confirm` for yes/no prompts, and `dialoguer::Select` for choosing between video/audio formats.
+
+### 3. Automatic yt-dlp Installation
+
+`check_and_install_ytdlp()` handles the full installation flow:
+
+```rust
+// Check if installed
+let check = Command::new("yt-dlp").arg("--version").status();
+if check.is_ok() { return Ok(true); }
+
+// Offer to install
+let install = Confirm::new()
+    .with_prompt("Would you like to install yt-dlp now?")
+    .interact()?;
+
+// Try pip, then standalone download
+```
+
+### 4. HTTP Request (`reqwest`)
 
 `reqwest::blocking::Client` is used to send a synchronous GET request. The blocking feature is explicitly enabled in `Cargo.toml` since this is a simple CLI tool (no async runtime needed).
 
@@ -160,7 +240,7 @@ let mut resp = client.get(target).send()
 
 Response headers (`Content-Length`, `Content-Type`) are extracted to display file metadata before downloading.
 
-### 3. Chunked Download Loop
+### 5. Chunked Download Loop
 
 The response body is read in chunks rather than all at once, which is memory-efficient for large files. The chunk size is calculated relative to `Content-Length`, with a minimum of 1024 bytes.
 
@@ -177,7 +257,7 @@ loop {
 }
 ```
 
-### 4. Progress Bar (`indicatif`)
+### 6. Progress Bar (`indicatif`)
 
 `create_progress_bar()` decides which style to render:
 - **Known length** → a determinate bar with `{bytes}/{total_bytes}` and `eta`
@@ -190,7 +270,7 @@ match length {
 }
 ```
 
-### 5. Colorized Output (`console`)
+### 7. Colorized Output (`console`)
 
 The `style()` wrapper from the `console` crate applies ANSI color codes to strings, e.g. green for success, red for sizes.
 
@@ -198,7 +278,7 @@ The `style()` wrapper from the `console` crate applies ANSI color codes to strin
 print(format!("HTTP request sent... {}", style(resp.status()).green()), quiet_mode);
 ```
 
-### 6. Error Handling (`anyhow`)
+### 8. Error Handling (`anyhow`)
 
 `anyhow::Result<()>` is used throughout. The `.context()` method wraps low-level errors with human-readable descriptions, and `anyhow::bail!` handles non-2xx HTTP responses:
 
@@ -206,7 +286,7 @@ print(format!("HTTP request sent... {}", style(resp.status()).green()), quiet_mo
 anyhow::bail!("Server returned an error: {}", resp.status());
 ```
 
-### 7. File Saving
+### 9. File Saving
 
 `save_to_file()` creates the output file and writes the fully buffered byte vector to disk:
 
@@ -220,18 +300,17 @@ fn save_to_file(buf: &[u8], fname: &str) -> Result<()> {
 
 ---
 
-## 🧪 What Changed Between `main.rs.bak` and `main.rs`
+## 🧪 Changelog
 
-The `.bak` file is the original draft before improvements were applied. Comparing the two is a great learning exercise:
+### v0.1.0 → v0.2.0
 
-| Area | `main.rs.bak` (old) | `main.rs` (current) |
+| Area | Before | After |
 |---|---|---|
-| Error handling | `Box<dyn Error>` + `.unwrap()` | `anyhow::Result` + `.context()` |
-| Function scope | Nested functions inside `main()` | Top-level functions |
-| `-O` output flag | Not implemented | ✅ Implemented |
-| HTTP error handling | No check for non-2xx | `anyhow::bail!` for failed status |
-| Chunk size floor | Could be 0 | `std::cmp::max(chunk_size, 1024)` |
-| API compatibility | Used outdated `reqwest` types | Updated to modern `0.11` API |
+| yt-dlp dependency | Hard crash if missing | ✅ Auto-install prompt (pip / standalone download) |
+| No arguments | Print help and exit | ✅ Launch interactive terminal UI |
+| Interactive mode | Not available | ✅ Full TUI with URL input, format selection, filename prompt |
+| Dependencies | 6 crates | 7 crates (added `dialoguer`) |
+| URL argument | Required | Optional (interactive mode when omitted) |
 
 ---
 
@@ -245,6 +324,8 @@ This project covers the following Rust concepts in a practical setting:
 - **Traits**: `Read` and `Write` from `std::io`
 - **Iterators**: `split('/')`, `.last()`, `.unwrap_or()`
 - **Closures**: Used internally in `indicatif` style templates
+- **Process Management**: Spawning child processes (`yt-dlp`), checking exit codes
+- **Interactive I/O**: Using `dialoguer` for terminal prompts and user input
 - **Crate ecosystem**: Integrating multiple community crates together
 
 ---
