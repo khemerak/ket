@@ -33,7 +33,7 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin_name: ket.exe
-            asset_name: ket-windows-amd64.exe
+            asset_name: ket-windows.exe
 
     steps:
       # 1. Grab your source code
