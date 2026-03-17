@@ -1,0 +1,65 @@
+name: Build and Release
+
+# This tells GitHub to run this action ONLY when you publish a new release
+on:
+  release:
+    types: [published]
+
+# This gives the action permission to upload files to your release page
+permissions:
+  contents: write
+
+jobs:
+  build-and-upload:
+    name: Build for ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    
+    # The matrix allows us to run the exact same steps on multiple operating systems
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin_name: ket
+            asset_name: ket-linux-amd64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            bin_name: ket
+            asset_name: ket-macos-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin_name: ket
+            asset_name: ket-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin_name: ket.exe
+            asset_name: ket-windows-amd64.exe
+
+    steps:
+      # 1. Grab your source code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Tell Rust to install the specific tools for the target OS
+      - name: Setup Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      # 3. Compile the optimized binary
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # 4. Rename the binary so users know which one to download (Linux/macOS)
+      - name: Rename binary (Linux and macOS)
+        if: matrix.os != 'windows-latest'
+        run: mv target/${{ matrix.target }}/release/${{ matrix.bin_name }} target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+
+      # 5. Rename the binary (Windows uses a different command line)
+      - name: Rename binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: Rename-Item -Path "target\${{ matrix.target }}\release\${{ matrix.bin_name }}" -NewName "${{ matrix.asset_name }}"
+
+      # 6. Upload the renamed binary directly to your GitHub Release
+      - name: Upload binaries to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/${{ matrix.target }}/release/${{ matrix.asset_name }}
