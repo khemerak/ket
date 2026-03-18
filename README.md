@@ -1,6 +1,6 @@
 # ket 🦀
 
-> A `wget` clone written in Rust — built as a hands-on learning project to explore Rust's ecosystem for CLI tools, HTTP networking, and terminal UX.
+> A `wget` clone written in Rust — built for speed, simplicity, and beautiful terminal UX.
 
 ---
 
@@ -8,7 +8,7 @@
 
 `ket` is a minimal command-line file downloader inspired by GNU `wget`. It takes a URL, makes an HTTP GET request, and saves the response body to disk — all while showing a beautiful, real-time progress bar in the terminal.
 
-The project was built as a **learning exercise** to explore the following Rust concepts and crates:
+The project demonstrates the following Rust concepts and crates:
 
 | Concept | What it teaches |
 |---|---|
@@ -31,6 +31,7 @@ The project was built as a **learning exercise** to explore the following Rust c
 - 🔧 **Auto-install yt-dlp** — if `yt-dlp` is not found, `ket` offers to install it automatically (via `pip` or standalone binary download)
 - 🖥️ **Interactive Mode** — double-click `ket.exe` (or run without arguments) to launch a beautiful terminal UI for pasting URLs, choosing download type, and more
 - 📊 Real-time progress bar with elapsed time, speed, and ETA (when `Content-Length` is available)
+- 🚀 **Seamless yt-dlp progress monitoring** — parses `yt-dlp` output silently behind a clean, single-line progress bar
 - 🌀 Spinner fallback for responses with unknown content length
 - 🎨 Colorized terminal output (green for OK, red for sizes/warnings)
 - 📁 Custom output filename via `-O` / `--output` flag (defaults to system `Downloads` directory)
@@ -90,13 +91,14 @@ ket https://example.com/video.mp4 -m
 
 Simply run `ket` with **no arguments** — or double-click `ket.exe` on Windows — to launch the interactive terminal UI:
 
-```
-  ┌─────────────────────────────────────────┐
-  │                                         │
-  │    ket 🦀  — Download Anything Fast     │
-  │          v0.1.0 • Interactive Mode      │
-  │                                         │
-  └─────────────────────────────────────────┘
+```text
+  ██╗  ██╗███████╗████████╗
+  ██║ ██╔╝██╔════╝╚══██╔══╝
+  █████╔╝ █████╗     ██║   
+  ██╔═██╗ ██╔══╝     ██║   
+  ██║  ██╗███████╗   ██║   
+  ╚═╝  ╚═╝╚══════╝   ╚═╝   
+        v0.2.0 • Interactive Mode
 
   Type a URL to start downloading. Type 'q' to quit.
 
@@ -104,6 +106,7 @@ Simply run `ket` with **no arguments** — or double-click `ket.exe` on Windows 
   Download type: 🎬 Video (MP4) / 🎵 Audio only (MP3)
   📁 Output filename (Enter to auto-detect):
 
+  Processing media... [00:03] [=================>  ] 90% eta: 00:01
   ✔ Download complete!
 
   Download another? (y/n)
@@ -337,5 +340,4 @@ This project covers the following Rust concepts in a practical setting:
 ---
 
 ## 📄 License
-
-This project is intended for educational purposes. No formal license is specified.
+This project is an unlicensed "homelab" type project built for personal use. No formal license is provided.

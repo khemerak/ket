@@ -2,12 +2,12 @@ extern crate clap;
 
 use clap::{Arg, App};
 use reqwest::blocking::Client;
-use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE};
+use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, USER_AGENT};
 use indicatif::{ProgressBar, ProgressStyle, HumanBytes};
 use console::style;
 use dialoguer::{Input, Confirm, Select};
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 use std::env;
 use anyhow::{Context, Result};
@@ -176,10 +176,16 @@ fn check_and_install_ytdlp() -> Result<bool> {
 }
 
 fn download(target: &str, output_file: Option<&str>, quiet_mode: bool) -> Result<()> {
-    let client = Client::new();
+    let client = Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .context("Failed to create HTTP client")?;
     
     // 2. Add context to the network request
-    let mut resp = client.get(target).send()
+    let mut resp = client.get(target)
+        .header(USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .send()
         .context(format!("Failed to connect to the URL: {}", target))?;
 
     print(format!("HTTP request sent... {}", style(resp.status()).green()), quiet_mode);
@@ -252,39 +258,143 @@ fn download(target: &str, output_file: Option<&str>, quiet_mode: bool) -> Result
     Ok(())
 }
 
+/// Check if ffmpeg is available on the system.
+fn is_ffmpeg_installed() -> bool {
+    Command::new("ffmpeg")
+        .arg("-version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 fn download_media(target: &str, output_file: Option<&str>, audio_only: bool, quiet_mode: bool) -> Result<()> {
-    print("Detected media URL. Delegating to yt-dlp...".to_string(), quiet_mode);
-    
+    // We remove the inner printing of "Delegating to yt-dlp..." to keep the interface very clean for the user.
     // Check and offer to install yt-dlp if missing
     let available = check_and_install_ytdlp()?;
     if !available {
         anyhow::bail!("Cannot download media without yt-dlp. Aborting.");
     }
 
+    let has_ffmpeg = is_ffmpeg_installed();
+
     let mut cmd = Command::new("yt-dlp");
     
     if audio_only {
         cmd.arg("-x").arg("--audio-format").arg("mp3");
-    } else {
-        // Enforce mp4 for video files per feature request
-        cmd.arg("-f").arg("bestvideo[ext=mp4]+bestaudio[ext=m4a]/mp4");
+    } else if has_ffmpeg {
+        // ffmpeg available: download best video + best audio separately, merge into mp4
+        cmd.arg("-f").arg("bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best");
         cmd.arg("--merge-output-format").arg("mp4");
+    } else {
+        // No ffmpeg: use a single pre-merged stream to avoid split files
+        if !quiet_mode {
+            println!("{}", style("⚠  ffmpeg not found — using single-stream mode (lower quality). Install ffmpeg for best results.").yellow());
+        }
+        cmd.arg("-f").arg("best[ext=mp4]/best");
+    }
+
+    // Ensure proper mp4 container (fixes TikTok and other sites with non-standard formats)
+    if !audio_only {
+        cmd.arg("--remux-video").arg("mp4");
     }
     
+    // Try to let yt-dlp handle the filename automatically unless the user explicitly provided one.
     if let Some(file) = output_file {
         cmd.arg("-o").arg(file);
+    } else {
+        // If no user file is provided, yt-dlp's default is usually fine (Title [ID].ext).
+        // However, if we want to save it to Downloads automatically, we can pass a format string
+        // instead of a hardcoded name. This forces it to save in Downloads but keeps the auto-name.
+        if let Some(downloads_path) = dirs::download_dir() {
+            let out_template = downloads_path.join("%(title)s [%(id)s].%(ext)s");
+            cmd.arg("-o").arg(out_template.to_string_lossy().to_string());
+        }
     }
     
+    // Force yt-dlp to output newline-delimited progress and no warnings
+    // We will parse it to show a clean progress bar
+    cmd.arg("--newline");
+    cmd.arg("--no-warnings");
     if quiet_mode {
         cmd.arg("--quiet");
     }
     
     cmd.arg(target);
     
+    if quiet_mode {
+        // If entirely quiet, just spawn and wait
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+        let mut child = cmd.spawn().context("Failed to spawn yt-dlp process")?;
+        let status = child.wait().context("Failed to wait on yt-dlp")?;
+        if !status.success() {
+            anyhow::bail!("yt-dlp exited with an error status: {}", status);
+        }
+        return Ok(());
+    }
+
+    // Interactive mode: pipe stdout so we can parse progress
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::null()); // Ignore all stderr noise (like VideoRemuxer etc)
+
+    print(format!("{} {}", style("Starting download:").cyan().bold(), target), quiet_mode);
+
     let mut child = cmd.spawn().context("Failed to spawn yt-dlp process")?;
+    let stdout = child.stdout.take().context("Failed to capture yt-dlp stdout")?;
+    let reader = BufReader::new(stdout);
+
+    // Create a generic spinner that will upgrade to a progress bar if we detect percentages
+    let bar = ProgressBar::new_spinner();
+    bar.set_style(ProgressStyle::default_spinner()
+        .template("{spinner:.green} {msg}")
+        .unwrap());
+    bar.set_message("Processing media (this may take a moment)...");
+
+    let mut is_downloading = false;
+
+    // Parse loop
+    for line in reader.lines() {
+        if let Ok(line) = line {
+            // yt-dlp progress lines look like:
+            // [download]   3.4% of 10.00MiB at  1.23MiB/s ETA 00:05
+            if line.starts_with("[download]") && line.contains("%") {
+                if !is_downloading {
+                    is_downloading = true;
+                    // Switch the bar to an actual visual progress bar
+                    bar.set_length(1000); // 100.0% * 10
+                    bar.set_style(ProgressStyle::default_bar()
+                        .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {percent}% {msg}")
+                        .unwrap()
+                        .progress_chars("=> "));
+                }
+
+                // Extract the percentage and speed clean
+                let clean_line = line.replace("[download]", "").trim().to_string();
+                let parts: Vec<&str> = clean_line.split('%').collect();
+                
+                if parts.len() >= 2 {
+                    if let Ok(pct) = parts[0].trim().parse::<f64>() {
+                        bar.set_position((pct * 10.0) as u64);
+                    }
+                    bar.set_message(parts[1].trim().to_string());
+                } else {
+                    bar.set_message(clean_line);
+                }
+            } else if line.starts_with("[youtube]") || line.starts_with("[info]") {
+                // Ignore these lines completely
+                bar.tick();
+            }
+        }
+    }
+
     let status = child.wait().context("Failed to wait on yt-dlp process")?;
     
-    if !status.success() {
+    if status.success() {
+        bar.finish_with_message("Processing complete");
+    } else {
+        bar.finish_with_message(format!("{}", style("Download failed").red()));
         anyhow::bail!("yt-dlp exited with an error status: {}", status);
     }
     
@@ -305,6 +415,7 @@ fn is_media_url(url: &str) -> bool {
 }
 
 /// Resolve the final output path from url and optional user-provided output name.
+/// (Used primarily for standard HTTP downloads, not yt-dlp, since yt-dlp does this better)
 fn resolve_output_path(url: &str, output_file: Option<&str>) -> String {
     let mut fname = match output_file {
         Some(name) => name.to_string(),
@@ -325,12 +436,13 @@ fn resolve_output_path(url: &str, output_file: Option<&str>) -> String {
 fn interactive_mode() -> Result<()> {
     // Print styled banner
     println!();
-    println!("  {}", style("┌─────────────────────────────────────────┐").cyan());
-    println!("  {}", style("│                                         │").cyan());
-    println!("  {}  {}  {}", style("│").cyan(), style("  ket 🦀  — Download Anything Fast  ").white().bold(), style("│").cyan());
-    println!("  {}  {}  {}", style("│").cyan(), style("        v1.0.0 • Interactive Mode    ").dim(), style("│").cyan());
-    println!("  {}", style("│                                         │").cyan());
-    println!("  {}", style("└─────────────────────────────────────────┘").cyan());
+    println!("{}", style("  ██╗  ██╗███████╗████████╗").cyan().bold());
+    println!("{}", style("  ██║ ██╔╝██╔════╝╚══██╔══╝").cyan().bold());
+    println!("{}", style("  █████╔╝ █████╗     ██║   ").cyan().bold());
+    println!("{}", style("  ██╔═██╗ ██╔══╝     ██║   ").cyan().bold());
+    println!("{}", style("  ██║  ██╗███████╗   ██║   ").cyan().bold());
+    println!("{}", style("  ╚═╝  ╚═╝╚══════╝   ╚═╝   ").cyan().bold());
+    println!("        {} • {}", style("v1.0.0").dim(), style("Interactive Mode").white());
     println!();
     println!("  {}", style("Type a URL to start downloading. Type 'q' to quit.").dim());
     println!();
@@ -383,16 +495,12 @@ fn interactive_mode() -> Result<()> {
         let custom_name = custom_name.trim().to_string();
         let output_file = if custom_name.is_empty() { None } else { Some(custom_name.as_str()) };
 
-        let fname = resolve_output_path(&url, output_file);
-
-        println!();
-        println!("  {} {}", style("Target:").bold(), style(&url).underlined());
-        println!();
-
         // Perform the download
         let result = if audio_only || is_media {
-            download_media(&url, Some(&fname), audio_only, false)
+            // Let yt-dlp handle the default filename (it adds the correct extension)
+            download_media(&url, output_file, audio_only, false)
         } else {
+            let fname = resolve_output_path(&url, output_file);
             download(&url, Some(&fname), false)
         };
 
@@ -466,11 +574,11 @@ fn main() -> Result<()> {
     
     println!("Target: {}", url);
 
-    let fname = resolve_output_path(url, output_file);
-
     if audio_only || force_media || is_media_url(url) {
-        download_media(url, Some(&fname), audio_only, false)?;
+        // Let yt-dlp determine the filename if output_file is None
+        download_media(url, output_file, audio_only, false)?;
     } else {
+        let fname = resolve_output_path(url, output_file);
         download(url, Some(&fname), false)?;
     }
     
