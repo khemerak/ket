@@ -1,4 +1,9 @@
-# ket 🦀
+██╗  ██╗███████╗████████╗
+██║ ██╔╝██╔════╝╚══██╔══╝
+█████╔╝ █████╗     ██║   
+██╔═██╗ ██╔══╝     ██║   
+██║  ██╗███████╗   ██║  
+╚═╝  ╚═╝╚══════╝   ╚═╝   
 
 > A `wget` clone written in Rust — built for speed, simplicity, and beautiful terminal UX.
 
