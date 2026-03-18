@@ -35,7 +35,7 @@ The project demonstrates the following Rust concepts and crates:
 
 - 📥 Download any file from a given HTTP/HTTPS URL
 - 🎬 Download videos (`.mp4`) and audio (`.mp3`) from media sites (YouTube, Vimeo, etc.) using `yt-dlp` integration (`-m` / `-a` flags)
-- 🔧 **Auto-install yt-dlp** — if `yt-dlp` is not found, `ket` offers to install it automatically (via `pip` or standalone binary download)
+- 🔧 **Self-managed yt-dlp** — `ket` automatically downloads and manages its own `yt-dlp` binary on first use (no PATH setup, no pip, no manual install)
 - 🖥️ **Interactive Mode** — double-click `ket.exe` (or run without arguments) to launch a beautiful terminal UI for pasting URLs, choosing download type, and more
 - 📊 Real-time progress bar with elapsed time, speed, and ETA (when `Content-Length` is available)
 - 🚀 **Seamless yt-dlp progress monitoring** — parses `yt-dlp` output silently behind a clean, single-line progress bar
@@ -105,7 +105,7 @@ Simply run `ket` with **no arguments** — or double-click `ket.exe` on Windows 
   ██╔═██╗ ██╔══╝     ██║   
   ██║  ██╗███████╗   ██║   
   ╚═╝  ╚═╝╚══════╝   ╚═╝   
-        v0.2.0 • Interactive Mode
+        v1.0.1 • Interactive Mode
 
   Type a URL to start downloading. Type 'q' to quit.
 
@@ -127,18 +127,26 @@ Simply run `ket` with **no arguments** — or double-click `ket.exe` on Windows 
 - Loop to download multiple files in one session
 - Type `q`, `quit`, or `exit` to close
 
-### 🔧 Automatic yt-dlp Installation
+### 🔧 Self-Managed yt-dlp Binary
 
-When you try to download from a media site and `yt-dlp` is not installed, `ket` will:
+`ket` manages its own `yt-dlp` binary — you never need to install it yourself or touch your PATH.
 
-1. **Detect** that `yt-dlp` is missing
-2. **Ask** if you'd like to install it automatically
-3. **Install** via one of these methods:
-   - `pip install yt-dlp` (if Python/pip is available)
-   - Direct download of the standalone `yt-dlp.exe` binary (Windows)
-   - `curl` download to `/usr/local/bin` or `~/.local/bin` (Linux/macOS)
+On first media download, `ket` will:
 
-> **Note:** For regular HTTP/HTTPS file downloads, `yt-dlp` is **not required**. The auto-install prompt only appears when downloading from media sites like YouTube, TikTok, etc.
+1. Resolve your platform's app data directory using the `directories` crate
+2. Download the latest standalone `yt-dlp` release from GitHub
+3. Set executable permissions (Unix)
+4. Verify the binary works
+
+The binary is stored at:
+
+| OS | Location |
+|---|---|
+| Windows | `%APPDATA%\ket\data\yt-dlp.exe` |
+| Linux | `~/.local/share/ket/yt-dlp` |
+| macOS | `~/Library/Application Support/com.ket.ket/yt-dlp` |
+
+> **Note:** For regular HTTP/HTTPS file downloads, `yt-dlp` is **not required**. The auto-download only happens when downloading from media sites like YouTube, TikTok, etc.
 
 ### Help
 
@@ -168,7 +176,12 @@ OPTIONS:
 ```
 ket/
 ├── src/
-│   └── main.rs         # All application logic (single-file project)
+│   ├── main.rs         # Entry point and CLI argument parsing
+│   ├── http.rs         # Standard HTTP file downloads (reqwest)
+│   ├── media.rs        # yt-dlp integration and self-managed binary
+│   ├── install.rs      # Software installation via winget
+│   ├── tui.rs          # Interactive terminal UI mode
+│   └── utils.rs        # Shared utilities (progress bars, helpers)
 ├── Cargo.toml          # Project metadata and dependencies
 ├── Cargo.lock          # Exact locked dependency versions
 └── .gitignore          # Excludes /target from version control
@@ -189,6 +202,7 @@ Defined in [`Cargo.toml`](./Cargo.toml):
 | [`anyhow`](https://crates.io/crates/anyhow) | `1.0` | Flexible, ergonomic error handling |
 | [`dirs`](https://crates.io/crates/dirs) | `6.0` | Cross-platform identification of system folders like `Downloads` |
 | [`dialoguer`](https://crates.io/crates/dialoguer) | `0.11` | Interactive terminal prompts (input, confirm, select) |
+| [`directories`](https://crates.io/crates/directories) | `5.0` | Cross-platform app data directories for self-managed yt-dlp binary |
 
 ---
 
@@ -221,22 +235,32 @@ let url: String = Input::new()
 
 This uses `dialoguer::Input` for text entry, `dialoguer::Confirm` for yes/no prompts, and `dialoguer::Select` for choosing between video/audio formats.
 
-### 3. Automatic yt-dlp Installation
+### 3. Self-Managed yt-dlp Binary
 
-`check_and_install_ytdlp()` handles the full installation flow:
+`ensure_ytdlp_binary()` resolves a cross-platform data directory using the `directories` crate and downloads the standalone `yt-dlp` binary on first use:
 
 ```rust
-// Check if installed
-let check = Command::new("yt-dlp").arg("--version").status();
-if check.is_ok() { return Ok(true); }
+pub fn ensure_ytdlp_binary() -> Result<PathBuf> {
+    let proj = ProjectDirs::from("com", "ket", "ket")
+        .context("Could not determine app data directory")?;
+    let binary_path = proj.data_dir().join(YTDLP_BINARY_NAME);
 
-// Offer to install
-let install = Confirm::new()
-    .with_prompt("Would you like to install yt-dlp now?")
-    .interact()?;
+    if binary_path.exists() { /* verify & return */ }
 
-// Try pip, then standalone download
+    // First-run: download from GitHub releases
+    let mut resp = client.get(YTDLP_DOWNLOAD_URL).send()?;
+    let mut file = fs::File::create(&binary_path)?;
+    std::io::copy(&mut resp, &mut file)?;
+
+    #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&binary_path, Permissions::from_mode(0o755))?;
+    }
+    Ok(binary_path)
+}
 ```
+
+All `Command::new()` calls for yt-dlp now use the `PathBuf` returned by this function instead of relying on the system PATH.
 
 ### 4. HTTP Request (`reqwest`)
 
@@ -311,16 +335,14 @@ fn save_to_file(buf: &[u8], fname: &str) -> Result<()> {
 ---
 
 ## 🧪 Changelog
-
-### v0.1.0 → v0.2.0
+### v1.0.1
 
 | Area | Before | After |
 |---|---|---|
-| yt-dlp dependency | Hard crash if missing | ✅ Auto-install prompt (pip / standalone download) |
-| No arguments | Print help and exit | ✅ Launch interactive terminal UI |
-| Interactive mode | Not available | ✅ Full TUI with URL input, format selection, filename prompt |
-| Dependencies | 6 crates | 7 crates (added `dialoguer`) |
-| URL argument | Required | Optional (interactive mode when omitted) |
+| yt-dlp management | Auto-install to system PATH | ✅ Self-managed binary in app data directory |
+| Code architecture | Single `main.rs` file | ✅ Modular: `http.rs`, `media.rs`, `install.rs`, `tui.rs`, `utils.rs` |
+| Package install | Not available | ✅ `winget` integration for installing software by name |
+| Dependencies | 7 crates | 8 crates (added `directories`) |
 
 ---
 
